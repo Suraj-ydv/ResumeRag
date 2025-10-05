@@ -37,7 +37,7 @@ const Navbar = () => {
                     />
                     <circle cx = "16.9857" cy = "17.4857" r="12.0143" fill = "#3575E2" />
                 </svg>
-                <span className="">JobJunction</span>
+                <span className=""> ResumeRAG</span>
             </a>
 
             {/* {NAV ITEMS FOR LARGE DEVICES} */}

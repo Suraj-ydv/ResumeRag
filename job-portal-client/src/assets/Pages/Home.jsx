@@ -14,10 +14,13 @@ const Home = () => {
 
   useEffect(() => {
     setIsLoading(true);
-    fetch("https://mern-job-portal-website.vercel.app/all-jobs").then(res => res.json()).then(data => {
-      setJobs(data);
-      setIsLoading(false)
-    })
+    fetch("https://mern-job-portal-website.vercel.app/all-jobs")
+      .then(res => res.json())
+      .then(data => {
+        setJobs(data);
+        setIsLoading(false)
+      })
+      .catch(() => setIsLoading(false));
   }, [])
 
   // console.log(jobs)

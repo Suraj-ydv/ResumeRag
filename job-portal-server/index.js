@@ -1,29 +1,26 @@
-const express = require('express')
-const app = express()
-const cors = require('cors')
-const port = process.env.PORT || 3000;
-require('dotenv').config()
-// Middleware
-app.use(express.json())
-app.use(cors( {
-origin: ["https://https://mern-job-portal-website.vercel.app/"],
-  methods: ["POST", "GET"],
-  credentials: true
-}
-));
-
-app.get('/', (req, res) => {
-  res.send('Hello Developer')
-})
-
-// Username - lakshay22dhoundiyal
-// Password - u97klyTxI0FAnbnn
-
-
+const express = require('express');
+const app = express();
+const cors = require('cors');
+require('dotenv').config();
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
-const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASSWORD}@job-portal.7ieojkl.mongodb.net/?retryWrites=true&w=majority&appName=job-portal`;
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
+const AdmZip = require('adm-zip');
+const rateLimiters = {};
 
-// Create a MongoClient with a MongoClientOptions object to set the Stable API version
+const port = process.env.PORT || 5000;
+
+// Middleware
+app.use(express.json());
+app.use(cors({
+  origin: ["https://mern-job-portal-website.vercel.app"],
+  methods: ["POST", "GET", "PATCH", "DELETE"],
+  credentials: true
+}));
+
+// MongoDB setup
+const uri = process.env.MONGO_URI || 'mongodb://localhost:27017/mernJobPortal';
 const client = new MongoClient(uri, {
   serverApi: {
     version: ServerApiVersion.v1,
@@ -32,107 +29,207 @@ const client = new MongoClient(uri, {
   }
 });
 
+// Multer setup for resume uploads
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, 'uploads/');
+  },
+  filename: function (req, file, cb) {
+    cb(null, Date.now() + '-' + file.originalname);
+  }
+});
+const upload = multer({ storage: storage });
+
+// --- Rate Limiting Middleware ---
+function rateLimiter(req, res, next) {
+  const user = req.headers['x-user'] || req.ip;
+  const now = Date.now();
+  if (!rateLimiters[user]) rateLimiters[user] = [];
+  rateLimiters[user] = rateLimiters[user].filter(ts => now - ts < 60000);
+  if (rateLimiters[user].length >= 60) {
+    return res.status(429).json({ error: { code: 'RATE_LIMIT' } });
+  }
+  rateLimiters[user].push(now);
+  next();
+}
+app.use(rateLimiter);
+
+// --- Uniform Error Helper ---
+function errorResponse(code, field, message, status=400) {
+  return { status, json: { error: { code, field, message } } };
+}
+
+// --- Idempotency Middleware ---
+const idempotencyCache = {};
+function idempotency(req, res, next) {
+  if (req.method === 'POST') {
+    const key = req.headers['idempotency-key'];
+    if (!key) return res.status(400).json({ error: { code: 'FIELD_REQUIRED', field: 'Idempotency-Key', message: 'Idempotency-Key is required' } });
+    if (idempotencyCache[key]) {
+      return res.status(200).json(idempotencyCache[key]);
+    }
+    res.sendResponse = res.json;
+    res.json = (body) => {
+      idempotencyCache[key] = body;
+      res.sendResponse(body);
+    };
+  }
+  next();
+}
+app.use(idempotency);
+
+// --- Auth Endpoints (Mock) ---
+app.post('/api/register', (req, res) => {
+  const { email, password } = req.body;
+  if (!email) return res.status(400).json(errorResponse('FIELD_REQUIRED', 'email', 'Email is required').json);
+  if (!password) return res.status(400).json(errorResponse('FIELD_REQUIRED', 'password', 'Password is required').json);
+  res.json({ user: { id: 'testid', email } });
+});
+app.post('/api/login', (req, res) => {
+  const { email, password } = req.body;
+  if (!email || !password) return res.status(400).json(errorResponse('FIELD_REQUIRED', 'email/password', 'Email and password required').json);
+  res.json({ token: 'mocktoken', user: { id: 'testid', email } });
+});
+
+// Root route
+app.get('/', (req, res) => {
+  res.send('Hello Developer');
+});
+
 async function run() {
   try {
-    // Connect the client to the server	(optional starting in v4.7)
     await client.connect();
-
-    //Create Database
-
     const db = client.db("mernJobPortal");
     const jobsCollections = db.collection("demoJobs");
 
-    // Posting a Job
-
-    app.post("/post-job", async(req, res) => {
-      const body = req.body;
-      body.createAt = new Date();
-      // console.log(body)
+    // Post a Job
+    app.post("/post-job", async (req, res) => {
+      const body = { ...req.body, createdAt: new Date() };
       const result = await jobsCollections.insertOne(body);
       if(result.insertedId){
         return res.status(200).send(result);
-        }else{
-          return res.status(404).send({
-            message: "Failed to post job! Try again later",
-            status: false
-          })
+      } else {
+        return res.status(500).send({ message: "Failed to post job", status: false });
       }
-    })
+    });
 
     // Get all jobs
-    app.get("/all-jobs", async(req, res) => {
-      const jobs = await jobsCollections.find({}).toArray()
+    app.get("/all-jobs", async (req, res) => {
+      const jobs = await jobsCollections.find({}).toArray();
       res.send(jobs);
-    })
+    });
 
-    // Get Single job using ID
-    app.get("/all-jobs/:id", async(req, res) => {
+    // Get single job by ID
+    app.get("/all-jobs/:id", async (req, res) => {
       const id = req.params.id;
-      const job = await jobsCollections.findOne({
-        _id: new ObjectId(id)
-      })
-      res.send(job)
-    })
+      const job = await jobsCollections.findOne({ _id: new ObjectId(id) });
+      res.send(job);
+    });
 
-    // Get Jobs by email
+    // Get jobs by email
+    app.get("/myJobs/:email", async (req, res) => {
+      const jobs = await jobsCollections.find({ postedBy: req.params.email }).toArray();
+      res.send(jobs);
+    });
 
-    app.get ("/myJobs/:email", async(req, res) => {
-      // console.log(req.params.email)
-      const jobs = await jobsCollections.find({postedBy : req.params.email}).toArray();
-      res.send(jobs)
-    })
-
-    // Delete a Job
-    app.delete("/job/:id", async(req, res) => {
+    // Delete a job
+    app.delete("/job/:id", async (req, res) => {
       const id = req.params.id;
-      const filter = {_id: new ObjectId(id)}
-      const result = await jobsCollections.deleteOne(filter);
-      res.send(result)
-    })
+      const result = await jobsCollections.deleteOne({ _id: new ObjectId(id) });
+      res.send(result);
+    });
 
-    //Update a Job
-    app.patch("/update-job/:id", async(req, res) => {
+    // Update a job
+    app.patch("/update-job/:id", async (req, res) => {
       const id = req.params.id;
       const jobData = req.body;
-      const filter = {_id: new ObjectId(id)};
-      const options = { upsert: true};
-      const updateDoc = {
-        $set: {
-          ...jobData
-        },
-    };
+      const result = await jobsCollections.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: jobData },
+        { upsert: true }
+      );
+      res.send(result);
+    });
 
-    const result = await jobsCollections.updateOne(filter, updateDoc, options);
-    res.send(result)
-  })
+    // --- Resume Upload (with ZIP support) ---
+    app.post('/api/resumes', upload.any(), async (req, res) => {
+      let files = req.files || [];
+      let resumeFiles = [];
+      for (const file of files) {
+        if (file.mimetype === 'application/zip') {
+          const zip = new AdmZip(file.path);
+          zip.getEntries().forEach(entry => {
+            if (!entry.isDirectory) {
+              const entryPath = path.join('uploads', Date.now() + '-' + entry.entryName);
+              fs.writeFileSync(entryPath, entry.getData());
+              resumeFiles.push({ filename: entry.entryName, path: entryPath });
+            }
+          });
+        } else {
+          resumeFiles.push(file);
+        }
+      }
+      // Simulate parsing/embedding
+      const parsed = resumeFiles.map(f => ({ id: Date.now() + Math.random(), filename: f.filename, text: 'parsed text', embedding: [0.1, 0.2] }));
+      res.json({ items: parsed, next_offset: null });
+    });
 
-  // Resume Submission
-  // API endpoint to handle job applications (POST request)
-app.post('/job/:id', async (req, res) => {
-  const { jobId, resumeLink } = req.body;
+    // --- Resume List & Get ---
+    let resumeDB = [];
+    app.get('/api/resumes', (req, res) => {
+      const { limit = 10, offset = 0, q } = req.query;
+      let items = resumeDB;
+      if (q) items = items.filter(r => r.text.includes(q));
+      res.json({ items: items.slice(offset, offset + limit), next_offset: offset + limit < items.length ? offset + limit : null });
+    });
+    app.get('/api/resumes/:id', (req, res) => {
+      const item = resumeDB.find(r => r.id == req.params.id);
+      if (!item) return res.status(404).json(errorResponse('NOT_FOUND', 'id', 'Resume not found').json);
+      res.json(item);
+    });
 
-  try {
-    const newApplication = new JobApplication({ jobId, resumeLink });
-    await newApplication.save();
+    // --- Q&A Endpoint ---
+    app.post('/api/ask', (req, res) => {
+      const { query, k } = req.body;
+      if (!query) return res.status(400).json(errorResponse('FIELD_REQUIRED', 'query', 'Query is required').json);
+      // Simulate answer
+      res.json({ answers: [{ text: 'Sample answer', evidence: 'Sample snippet' }] });
+    });
 
-    res.json({ message: 'Application submitted successfully!' });
-    console.log('Application saved:', newApplication);
-  } catch (error) {
-    console.error('Error saving application:', error.message);
-    res.status(500).json({ message: 'Server Error' });
-  }
-});
+    // --- Jobs Endpoints (with pagination) ---
+    app.post('/api/jobs', (req, res) => {
+      // ...simulate job creation...
+      res.json({ id: Date.now(), ...req.body });
+    });
+    app.get('/api/jobs/:id', (req, res) => {
+      // ...simulate job fetch...
+      res.json({ id: req.params.id, title: 'Sample Job' });
+    });
 
-    // Send a ping to confirm a successful connection
+    // --- Job Match Endpoint ---
+    app.post('/api/jobs/:id/match', (req, res) => {
+      const { top_n } = req.body;
+      // Simulate match
+      res.json({ matches: [{ resume_id: 1, score: 0.95, evidence: 'Skill match', missing: [] }] });
+    });
+
+    // --- PII Redaction Helper ---
+    function redactPII(text, isRecruiter) {
+      if (isRecruiter) return text;
+      return text.replace(/\b([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})\b/g, '[REDACTED EMAIL]');
+    }
+
+    // Confirm connection
     await client.db("admin").command({ ping: 1 });
-    console.log("Pinged your deployment. You successfully connected to MongoDB!");
+    console.log("Successfully connected to MongoDB!");
   } finally {
-    // Ensures that the client will close when you finish/error
-    // await client.close();
+    // client.close() // Do NOT close client if server is running
   }
 }
+
 run().catch(console.dir);
 
+// Start server
 app.listen(port, () => {
-  console.log(`Example app listening on port ${port}`)
-})
+  console.log(`Server running on port ${port}`);
+});

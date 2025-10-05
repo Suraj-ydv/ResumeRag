@@ -12,8 +12,7 @@ const CreateJob = () => {
     
       const onSubmit = (data) => {
         data.skills = selectedOption;
-        // console.log(data);
-        fetch("https://mern-job-portal-website.vercel.app/post-job", {
+        fetch("http://localhost:3000/post-job", {
           method: "POST",
           headers: {'content-type': 'application/json'},
           body: JSON.stringify(data)
@@ -26,7 +25,7 @@ const CreateJob = () => {
           }
           reset()
         });
-        };
+      };
 
         const options = [
             {value: "JavaScript", label: "JavaScript"},

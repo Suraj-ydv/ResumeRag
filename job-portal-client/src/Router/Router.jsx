@@ -9,6 +9,7 @@ import UpdateJob from "../assets/Pages/UpdateJob";
 import Login from "../components/Login";
 import JobDetails from "../assets/Pages/JobDetails";
 import Signup from "../components/Signup";
+import ResumeUpload from "../assets/Pages/ResumeUpload";
 
 const router = createBrowserRouter([
     {
@@ -37,6 +38,10 @@ const router = createBrowserRouter([
         {
           path: "/job/:id",
           element: <JobDetails/>
+        },
+        {
+          path: "/upload",
+          element: <ResumeUpload/>
         }
 
     ],
